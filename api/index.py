@@ -269,11 +269,15 @@ def admin_login():
         body = flask_request.form.to_dict() or (flask_request.get_json(silent=True) or {})
         pw = body.get('password', '')
         if pw == ADMIN_PASSWORD:
-            resp = _json_response({'success': True})
-            resp.set_cookie(SESSION_COOKIE, _make_cookie({'auth': True})[len(SESSION_COOKIE) + 1:],
+            cookie_str = _make_cookie({'auth': True})
+            resp = redirect('/admin', code=302)
+            # 从 _make_cookie 输出中提取 cookie 值部分
+            cookie_val = cookie_str.split('=', 1)[1].split(';')[0]
+            resp.set_cookie(SESSION_COOKIE, cookie_val,
                             path='/', httponly=True, max_age=86400)
             return resp
-        return _json_response({'success': False, 'message': '密码错误'}, 401)
+        html = LOGIN_HTML.replace('{{ERROR}}', '<div class="err">密码错误，请重试</div>')
+        return _html_response(html)
     # GET
     html = LOGIN_HTML.replace('{{ERROR}}', '')
     return _html_response(html)
