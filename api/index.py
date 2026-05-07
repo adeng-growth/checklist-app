@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 中小企业增长自检清单 - Vercel Flask Serverless 入口
-使用 Flask app 作为 Vercel 标准入口
 """
 
 import os
@@ -10,15 +9,13 @@ import json
 import base64
 import hashlib
 import hmac
+import traceback
 import requests as req_lib
 from datetime import datetime
-from io import BytesIO
-from flask import Flask, request as flask_request, Response, redirect
+from flask import Flask, request as flask_request, Response
 
-# ===== Flask App（Vercel 入口） =====
 app = Flask(__name__)
 
-# ===== 配置 =====
 AIRTABLE_API_KEY = os.getenv('AIRTABLE_API_KEY', '')
 AIRTABLE_BASE_ID = os.getenv('AIRTABLE_BASE_ID', '')
 AIRTABLE_TABLE_NAME = 'Submissions'
@@ -41,14 +38,13 @@ def _airtable_url():
 
 def _json_response(data, status=200):
     return Response(json.dumps(data, ensure_ascii=False), status=status,
-                    mimetype='application/json; charset=utf-8')
+                   mimetype='application/json; charset=utf-8')
 
 
 def _html_response(body, status=200):
     return Response(body, status=status, mimetype='text/html; charset=utf-8')
 
 
-# ===== Session =====
 SESSION_COOKIE = 'ad_sess'
 _SESSION_KEY = SECRET_KEY.encode('utf-8')
 
@@ -92,7 +88,6 @@ def _is_auth():
     return _parse_session(_get_cookie_str()).get('auth') is True
 
 
-# ===== 静态文件 =====
 def _static(filename):
     root_dir = os.path.dirname(_HERE)
     filepath = os.path.join(root_dir, filename)
@@ -103,7 +98,6 @@ def _static(filename):
         return None
 
 
-# ===== HTML 模板 =====
 LOGIN_HTML = '''<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -111,7 +105,7 @@ LOGIN_HTML = '''<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>后台登录</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
+{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;background:linear-gradient(135deg,#1a365d,#2d5a87);min-height:100vh;display:flex;align-items:center;justify-content:center}
 .box{background:#fff;padding:40px 36px;border-radius:20px;box-shadow:0 20px 60px rgba(0,0,0,.3);width:92%;max-width:380px}
 h2{font-size:22px;color:#1a365d;margin-bottom:8px;text-align:center}
@@ -140,7 +134,7 @@ ADMIN_HTML = '''<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>管理后台</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
+{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;background:#f5f7fa}
 .top{background:linear-gradient(135deg,#1a365d,#2d5a87);color:#fff;padding:16px 24px;display:flex;justify-content:space-between;align-items:center}
 .top h1{font-size:18px}
@@ -214,7 +208,6 @@ document.getElementById('kw').addEventListener('keyup',e=>{if(e.key=='Enter')ren
 </body></html>'''
 
 
-# ===== 工具函数 =====
 def _get_result_type(score):
     if score <= 10:
         return '危机型'
@@ -231,8 +224,6 @@ def _get_result_type(score):
 def _is_mobile(ua):
     return any(k in (ua or '').lower() for k in ['mobile', 'android', 'iphone', 'ipad', 'phone'])
 
-
-# ===== 路由 =====
 
 @app.route('/api/health')
 def health():
@@ -269,9 +260,7 @@ def admin_login():
         body = flask_request.form.to_dict() or (flask_request.get_json(silent=True) or {})
         pw = body.get('password', '')
         if pw == ADMIN_PASSWORD:
-            # 直接构造 cookie 字符串，通过 Response header 设置
             cookie_str = _make_cookie({'auth': True})
-            # 返回一个 HTML 页面，用 JS 跳转到 /admin，避免 Vercel 不支持 redirect 的问题
             redirect_html = '''<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta http-equiv="refresh" content="0;url=/admin">
 <title>登录成功</title></head>
@@ -283,7 +272,6 @@ def admin_login():
             return resp
         html = LOGIN_HTML.replace('{{ERROR}}', '<div class="err">密码错误，请重试</div>')
         return _html_response(html)
-    # GET
     html = LOGIN_HTML.replace('{{ERROR}}', '')
     return _html_response(html)
 
@@ -358,6 +346,7 @@ def submit():
                 print('Airtable error:', r.text)
         except Exception as e:
             print('Airtable save error:', e)
+            traceback.print_exc()
 
     return _json_response({
         'success': True,
@@ -400,6 +389,8 @@ def records():
             })
         return _json_response({'success': True, 'total': len(recs), 'records': recs})
     except Exception as e:
+        print('Records error:', e)
+        traceback.print_exc()
         return _json_response({'success': False, 'message': str(e)}, 500)
 
 
@@ -407,18 +398,16 @@ def records():
 def export_excel():
     if not _is_auth():
         return _json_response({'success': False, 'message': '未授权'}, 401)
-    try:
-        import openpyxl
-        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-    except ImportError:
-        return _json_response({'success': False, 'message': '请先安装openpyxl'}, 500)
 
     rows = []
     if AIRTABLE_API_KEY and AIRTABLE_BASE_ID:
         try:
             r = req_lib.get(_airtable_url(), headers=_airtable_headers(), params={'pageSize': 100}, timeout=10)
+            print('Airtable status:', r.status_code)
             if r.status_code == 200:
-                for item in r.json().get('records', []):
+                data = r.json()
+                print('Airtable records count:', len(data.get('records', [])))
+                for item in data.get('records', []):
                     f = item.get('fields', {})
                     rows.append([
                         item.get('id', ''),
@@ -434,55 +423,34 @@ def export_excel():
                         f.get('CreatedAt', ''),
                     ])
         except Exception as e:
-            print('Export error:', e)
+            print('Export Airtable error:', e)
+            traceback.print_exc()
 
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = '自检清单数据'
-    hfont = Font(bold=True, color='FFFFFF', size=11)
-    hfill = PatternFill(start_color='1a365d', end_color='1a365d', fill_type='solid')
-    halign = Alignment(horizontal='center', vertical='center')
-    bdr = Border(left=Side(style='thin'), right=Side(style='thin'),
-                 top=Side(style='thin'), bottom=Side(style='thin'))
+    # 生成 CSV（Excel 可直接打开，无需 openpyxl）
     hdrs = ['ID', '姓名', '公司', '电话', '行业',
-            '总分', '商业模式', '品牌定位', '流量获客', '转化成交', '组织系统',
-            '类型', '提交时间']
-    for c, h in enumerate(hdrs, 1):
-        cell = ws.cell(row=1, column=c, value=h)
-        cell.font = hfont
-        cell.fill = hfill
-        cell.alignment = halign
-        cell.border = bdr
-    for ri, row in enumerate(rows, 2):
-        for ci, v in enumerate(row, 1):
-            cell = ws.cell(row=ri, column=ci, value=v)
-            cell.border = bdr
-            cell.alignment = Alignment(horizontal='center', vertical='center')
-    for col in ws.columns:
-        ml = 0
-        first_cell = list(col)[0]
-        letter = first_cell.column_letter
-        for cell in col:
-            try:
-                if cell.value and len(str(cell.value)) > ml:
-                    ml = len(str(cell.value))
-            except Exception:
-                pass
-        ws.column_dimensions[letter].width = min(ml + 2, 50)
-    buf = BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    excel_bytes = buf.read()
-    fname = '自检清单数据_' + datetime.now().strftime('%Y%m%d_%H%M%S') + '.xlsx'
+             '总分', '商业模式', '品牌定位', '流量获客', '转化成交', '组织系统',
+             '类型', '提交时间']
+    output = []
+    output.append(','.join(['"' + h + '"' for h in hdrs]))
+    for row in rows:
+        formatted = []
+        for v in row:
+            formatted.append('"' + str(v).replace('"', '""') + '"')
+        output.append(','.join(formatted))
+
+    csv_content = '\n'.join(output)
+    # UTF-8 BOM 让 Excel 正确识别中文
+    csv_bytes = csv_content.encode('utf-8-sig')
+    fname = '自检清单数据_' + datetime.now().strftime('%Y%m%d_%H%M%S') + '.csv'
+    print('CSV generated, size:', len(csv_bytes))
 
     return Response(
-        excel_bytes,
-        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        headers={'Content-Disposition': 'attachment; filename="' + fname + '"'}
+        csv_bytes,
+        mimetype='text/csv; charset=utf-8',
+        headers=[('Content-Disposition', 'attachment; filename="' + fname + '"')]
     )
 
 
-# ===== 404 兜底 =====
 @app.errorhandler(404)
 def not_found(e):
     return _html_response('404 Not Found', 404)
