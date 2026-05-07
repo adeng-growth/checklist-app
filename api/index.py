@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-中小企业增长自检清单 - Vercel Python Serverless 入口
-只暴露一个 handler(request) 函数给 Vercel
+中小企业增长自检清单 - Vercel Flask Serverless 入口
+使用 Flask app 作为 Vercel 标准入口
 """
 
 import os
@@ -13,6 +13,10 @@ import hmac
 import requests as req_lib
 from datetime import datetime
 from io import BytesIO
+from flask import Flask, request as flask_request, Response, redirect
+
+# ===== Flask App（Vercel 入口） =====
+app = Flask(__name__)
 
 # ===== 配置 =====
 AIRTABLE_API_KEY = os.getenv('AIRTABLE_API_KEY', '')
@@ -35,26 +39,22 @@ def _airtable_url():
     return 'https://api.airtable.com/v0/' + AIRTABLE_BASE_ID + '/' + AIRTABLE_TABLE_NAME
 
 
-def _resp(status, headers, body):
-    """构造 Vercel 响应 dict"""
-    return {'statusCode': status, 'headers': headers, 'body': body}
+def _json_response(data, status=200):
+    return Response(json.dumps(data, ensure_ascii=False), status=status,
+                    mimetype='application/json; charset=utf-8')
 
 
-def _json_resp(data, status=200):
-    return _resp(status, {'Content-Type': 'application/json; charset=utf-8'}, json.dumps(data, ensure_ascii=False))
-
-
-def _html_resp(body, status=200):
-    return _resp(status, {'Content-Type': 'text/html; charset=utf-8'}, body)
-
-
-def _redirect_resp(location):
-    return _resp(302, {'Location': location}, '')
+def _html_response(body, status=200):
+    return Response(body, status=status, mimetype='text/html; charset=utf-8')
 
 
 # ===== Session =====
 SESSION_COOKIE = 'ad_sess'
 _SESSION_KEY = SECRET_KEY.encode('utf-8')
+
+
+def _get_cookie_str():
+    return flask_request.headers.get('Cookie', '') or ''
 
 
 def _parse_session(cookies_str):
@@ -88,8 +88,8 @@ def _make_cookie(data):
     return SESSION_COOKIE + '=' + data_b64 + '.' + sig + '; Path=/; HttpOnly; Max-Age=86400'
 
 
-def _is_auth(cookies_str):
-    return _parse_session(cookies_str).get('auth') is True
+def _is_auth():
+    return _parse_session(_get_cookie_str()).get('auth') is True
 
 
 # ===== 静态文件 =====
@@ -215,26 +215,6 @@ document.getElementById('kw').addEventListener('keyup',e=>{if(e.key=='Enter')ren
 
 
 # ===== 工具函数 =====
-def _parse_body(body_raw):
-    """解析 request body，支持 JSON 和 form-urlencoded"""
-    if isinstance(body_raw, dict):
-        return body_raw
-    if isinstance(body_raw, str) and body_raw:
-        # 尝试 JSON
-        try:
-            return json.loads(body_raw)
-        except Exception:
-            pass
-        # 尝试 form-urlencoded
-        result = {}
-        for pair in body_raw.split('&'):
-            if '=' in pair:
-                k, v = pair.split('=', 1)
-                result[k] = v
-        return result
-    return {}
-
-
 def _get_result_type(score):
     if score <= 10:
         return '危机型'
@@ -252,239 +232,237 @@ def _is_mobile(ua):
     return any(k in (ua or '').lower() for k in ['mobile', 'android', 'iphone', 'ipad', 'phone'])
 
 
-# ===== 主入口 =====
-def handler(request):
-    method = (request.get('method') or request.get('httpMethod') or 'GET').upper()
-    path = request.get('path', '/')
-    headers_in = request.get('headers', {})
-    cookies = headers_in.get('Cookie', '') or headers_in.get('cookie', '')
-    body_raw = request.get('body', '')
+# ===== 路由 =====
 
-    body = _parse_body(body_raw)
+@app.route('/api/health')
+def health():
+    return _json_response({'status': 'ok', 'db': bool(AIRTABLE_API_KEY and AIRTABLE_BASE_ID)})
 
-    # /api/health
-    if path == '/api/health':
-        return _json_resp({'status': 'ok', 'db': bool(AIRTABLE_API_KEY and AIRTABLE_BASE_ID)})
 
-    # / - 首页
-    if path == '/' or path == '':
-        ua = headers_in.get('User-Agent', '')
-        if _is_mobile(ua):
-            html = _static('index_mobile.html')
-        else:
-            html = _static('index.html')
-        if html:
-            return _html_resp(html)
-        return _html_resp('Not Found', 404)
-
-    # /mobile /desktop
-    if path == '/mobile':
+@app.route('/')
+def index():
+    ua = flask_request.headers.get('User-Agent', '')
+    if _is_mobile(ua):
         html = _static('index_mobile.html')
-        return _html_resp(html or 'Not Found', 200 if html else 404)
-    if path == '/desktop':
+    else:
         html = _static('index.html')
-        return _html_resp(html or 'Not Found', 200 if html else 404)
+    if html:
+        return _html_response(html)
+    return _html_response('Not Found', 404)
 
-    # /admin/login
-    if path == '/admin/login':
-        if method == 'POST':
-            pw = body.get('password', '')
-            if pw == ADMIN_PASSWORD:
-                return {
-                    'statusCode': 200,
-                    'headers': {
-                        'Content-Type': 'application/json; charset=utf-8',
-                        'Set-Cookie': _make_cookie({'auth': True})
-                    },
-                    'body': json.dumps({'success': True}, ensure_ascii=False)
-                }
-            return _json_resp({'success': False, 'message': '密码错误'}, 401)
-        # GET
-        html = LOGIN_HTML.replace('{{ERROR}}', '')
-        return _html_resp(html)
 
-    # /admin/logout
-    if path == '/admin/logout':
-        return {
-            'statusCode': 302,
-            'headers': {
-                'Location': '/admin/login',
-                'Set-Cookie': SESSION_COOKIE + '=; Path=/; Max-Age=0'
-            },
-            'body': ''
-        }
+@app.route('/mobile')
+def mobile():
+    html = _static('index_mobile.html')
+    return _html_response(html or 'Not Found', 200 if html else 404)
 
-    # /admin
-    if path == '/admin':
-        if not _is_auth(cookies):
-            return _redirect_resp('/admin/login')
-        return _html_resp(ADMIN_HTML)
 
-    # /api/submit
-    if path == '/api/submit':
-        if method != 'POST':
-            return _json_resp({'success': False, 'message': 'Method not allowed'}, 405)
-        answers = body.get('answers', {})
-        if not answers or len(answers) < 50:
-            return _json_resp({'success': False, 'message': '请完成所有题目'}, 400)
+@app.route('/desktop')
+def desktop():
+    html = _static('index.html')
+    return _html_response(html or 'Not Found', 200 if html else 404)
 
-        sd = []
-        for start in range(1, 42, 10):
-            cnt = 0
-            for i in range(start, start + 10):
-                if answers.get(str(i)) == 'yes':
-                    cnt += 1
-            sd.append(cnt)
-        total = sum(sd)
-        rtype = _get_result_type(total)
 
-        if AIRTABLE_API_KEY and AIRTABLE_BASE_ID:
+@app.route('/admin/login', methods=['GET', 'POST'])
+def admin_login():
+    if flask_request.method == 'POST':
+        body = flask_request.form.to_dict() or (flask_request.get_json(silent=True) or {})
+        pw = body.get('password', '')
+        if pw == ADMIN_PASSWORD:
+            resp = _json_response({'success': True})
+            resp.set_cookie(SESSION_COOKIE, _make_cookie({'auth': True})[len(SESSION_COOKIE) + 1:],
+                            path='/', httponly=True, max_age=86400)
+            return resp
+        return _json_response({'success': False, 'message': '密码错误'}, 401)
+    # GET
+    html = LOGIN_HTML.replace('{{ERROR}}', '')
+    return _html_response(html)
+
+
+@app.route('/admin/logout')
+def admin_logout():
+    resp = redirect('/admin/login', code=302)
+    resp.delete_cookie(SESSION_COOKIE, path='/')
+    return resp
+
+
+@app.route('/admin')
+def admin():
+    if not _is_auth():
+        return redirect('/admin/login', code=302)
+    return _html_response(ADMIN_HTML)
+
+
+@app.route('/api/submit', methods=['POST'])
+def submit():
+    body = flask_request.get_json(silent=True) or flask_request.form.to_dict() or {}
+    answers = body.get('answers', {})
+    if isinstance(answers, str):
+        try:
+            answers = json.loads(answers)
+        except Exception:
+            answers = {}
+    if not answers or len(answers) < 50:
+        return _json_response({'success': False, 'message': '请完成所有题目'}, 400)
+
+    sd = []
+    for start in range(1, 42, 10):
+        cnt = 0
+        for i in range(start, start + 10):
+            if answers.get(str(i)) == 'yes':
+                cnt += 1
+        sd.append(cnt)
+    total = sum(sd)
+    rtype = _get_result_type(total)
+
+    if AIRTABLE_API_KEY and AIRTABLE_BASE_ID:
+        try:
+            r = req_lib.post(
+                _airtable_url(),
+                headers=_airtable_headers(),
+                json={'fields': {
+                    'Name': body.get('name', ''),
+                    'Company': body.get('company', ''),
+                    'Phone': body.get('phone', ''),
+                    'Industry': body.get('industry', ''),
+                    'Answers': json.dumps(answers, ensure_ascii=False),
+                    'ScoreTotal': total,
+                    'ScoreD1': sd[0], 'ScoreD2': sd[1], 'ScoreD3': sd[2],
+                    'ScoreD4': sd[3], 'ScoreD5': sd[4],
+                    'ResultType': rtype,
+                    'CreatedAt': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.000Z'),
+                }},
+                timeout=10
+            )
+            if r.status_code not in (200, 201):
+                print('Airtable error:', r.text)
+        except Exception as e:
+            print('Airtable save error:', e)
+
+    return _json_response({
+        'success': True,
+        'score_total': total,
+        'score_d1': sd[0], 'score_d2': sd[1], 'score_d3': sd[2],
+        'score_d4': sd[3], 'score_d5': sd[4], 'result_type': rtype
+    })
+
+
+@app.route('/api/records')
+def records():
+    if not _is_auth():
+        return _json_response({'success': False, 'message': '未授权'}, 401)
+    if not (AIRTABLE_API_KEY and AIRTABLE_BASE_ID):
+        return _json_response({'success': True, 'total': 0, 'records': []})
+    try:
+        r = req_lib.get(_airtable_url(), headers=_airtable_headers(), params={'pageSize': 100}, timeout=10)
+        if r.status_code != 200:
+            return _json_response({'success': False, 'message': '读取失败'}, 500)
+        recs = []
+        for item in r.json().get('records', []):
+            f = item.get('fields', {})
             try:
-                r = req_lib.post(
-                    _airtable_url(),
-                    headers=_airtable_headers(),
-                    json={'fields': {
-                        'Name': body.get('name', ''),
-                        'Company': body.get('company', ''),
-                        'Phone': body.get('phone', ''),
-                        'Industry': body.get('industry', ''),
-                        'Answers': json.dumps(answers, ensure_ascii=False),
-                        'ScoreTotal': total,
-                        'ScoreD1': sd[0], 'ScoreD2': sd[1], 'ScoreD3': sd[2],
-                        'ScoreD4': sd[3], 'ScoreD5': sd[4],
-                        'ResultType': rtype,
-                        'CreatedAt': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.000Z'),
-                    }},
-                    timeout=10
-                )
-                if r.status_code not in (200, 201):
-                    print('Airtable error:', r.text)
-            except Exception as e:
-                print('Airtable save error:', e)
+                ans = json.loads(f.get('Answers', '{}'))
+            except Exception:
+                ans = {}
+            recs.append({
+                'id': item.get('id', ''),
+                'name': f.get('Name', ''),
+                'company': f.get('Company', ''),
+                'phone': f.get('Phone', ''),
+                'industry': f.get('Industry', ''),
+                'answers': ans,
+                'score_total': f.get('ScoreTotal', 0),
+                'score_d1': f.get('ScoreD1', 0), 'score_d2': f.get('ScoreD2', 0),
+                'score_d3': f.get('ScoreD3', 0), 'score_d4': f.get('ScoreD4', 0),
+                'score_d5': f.get('ScoreD5', 0),
+                'result_type': f.get('ResultType', ''),
+                'created_at': f.get('CreatedAt', ''),
+            })
+        return _json_response({'success': True, 'total': len(recs), 'records': recs})
+    except Exception as e:
+        return _json_response({'success': False, 'message': str(e)}, 500)
 
-        return _json_resp({
-            'success': True,
-            'score_total': total,
-            'score_d1': sd[0], 'score_d2': sd[1], 'score_d3': sd[2],
-            'score_d4': sd[3], 'score_d5': sd[4], 'result_type': rtype
-        })
 
-    # /api/records
-    if path == '/api/records':
-        if not _is_auth(cookies):
-            return _json_resp({'success': False, 'message': '未授权'}, 401)
-        if not (AIRTABLE_API_KEY and AIRTABLE_BASE_ID):
-            return _json_resp({'success': True, 'total': 0, 'records': []})
+@app.route('/api/export/excel')
+def export_excel():
+    if not _is_auth():
+        return _json_response({'success': False, 'message': '未授权'}, 401)
+    try:
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    except ImportError:
+        return _json_response({'success': False, 'message': '请先安装openpyxl'}, 500)
+
+    rows = []
+    if AIRTABLE_API_KEY and AIRTABLE_BASE_ID:
         try:
             r = req_lib.get(_airtable_url(), headers=_airtable_headers(), params={'pageSize': 100}, timeout=10)
-            if r.status_code != 200:
-                return _json_resp({'success': False, 'message': '读取失败'}, 500)
-            recs = []
-            for item in r.json().get('records', []):
-                f = item.get('fields', {})
-                try:
-                    ans = json.loads(f.get('Answers', '{}'))
-                except Exception:
-                    ans = {}
-                recs.append({
-                    'id': item.get('id', ''),
-                    'name': f.get('Name', ''),
-                    'company': f.get('Company', ''),
-                    'phone': f.get('Phone', ''),
-                    'industry': f.get('Industry', ''),
-                    'answers': ans,
-                    'score_total': f.get('ScoreTotal', 0),
-                    'score_d1': f.get('ScoreD1', 0), 'score_d2': f.get('ScoreD2', 0),
-                    'score_d3': f.get('ScoreD3', 0), 'score_d4': f.get('ScoreD4', 0),
-                    'score_d5': f.get('ScoreD5', 0),
-                    'result_type': f.get('ResultType', ''),
-                    'created_at': f.get('CreatedAt', ''),
-                })
-            return _json_resp({'success': True, 'total': len(recs), 'records': recs})
+            if r.status_code == 200:
+                for item in r.json().get('records', []):
+                    f = item.get('fields', {})
+                    rows.append([
+                        item.get('id', ''),
+                        f.get('Name', ''),
+                        f.get('Company', ''),
+                        f.get('Phone', ''),
+                        f.get('Industry', ''),
+                        f.get('ScoreTotal', 0),
+                        f.get('ScoreD1', 0), f.get('ScoreD2', 0),
+                        f.get('ScoreD3', 0), f.get('ScoreD4', 0),
+                        f.get('ScoreD5', 0),
+                        f.get('ResultType', ''),
+                        f.get('CreatedAt', ''),
+                    ])
         except Exception as e:
-            return _json_resp({'success': False, 'message': str(e)}, 500)
+            print('Export error:', e)
 
-    # /api/export/excel
-    if path == '/api/export/excel':
-        if not _is_auth(cookies):
-            return _json_resp({'success': False, 'message': '未授权'}, 401)
-        try:
-            import openpyxl
-            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-        except ImportError:
-            return _json_resp({'success': False, 'message': '请先安装openpyxl'}, 500)
-
-        rows = []
-        if AIRTABLE_API_KEY and AIRTABLE_BASE_ID:
-            try:
-                r = req_lib.get(_airtable_url(), headers=_airtable_headers(), params={'pageSize': 100}, timeout=10)
-                if r.status_code == 200:
-                    for item in r.json().get('records', []):
-                        f = item.get('fields', {})
-                        rows.append([
-                            item.get('id', ''),
-                            f.get('Name', ''),
-                            f.get('Company', ''),
-                            f.get('Phone', ''),
-                            f.get('Industry', ''),
-                            f.get('ScoreTotal', 0),
-                            f.get('ScoreD1', 0), f.get('ScoreD2', 0),
-                            f.get('ScoreD3', 0), f.get('ScoreD4', 0),
-                            f.get('ScoreD5', 0),
-                            f.get('ResultType', ''),
-                            f.get('CreatedAt', ''),
-                        ])
-            except Exception as e:
-                print('Export error:', e)
-
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = '自检清单数据'
-        hfont = Font(bold=True, color='FFFFFF', size=11)
-        hfill = PatternFill(start_color='1a365d', end_color='1a365d', fill_type='solid')
-        halign = Alignment(horizontal='center', vertical='center')
-        bdr = Border(left=Side(style='thin'), right=Side(style='thin'),
-                     top=Side(style='thin'), bottom=Side(style='thin'))
-        hdrs = ['ID', '姓名', '公司', '电话', '行业',
-                '总分', '商业模式', '品牌定位', '流量获客', '转化成交', '组织系统',
-                '类型', '提交时间']
-        for c, h in enumerate(hdrs, 1):
-            cell = ws.cell(row=1, column=c, value=h)
-            cell.font = hfont
-            cell.fill = hfill
-            cell.alignment = halign
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = '自检清单数据'
+    hfont = Font(bold=True, color='FFFFFF', size=11)
+    hfill = PatternFill(start_color='1a365d', end_color='1a365d', fill_type='solid')
+    halign = Alignment(horizontal='center', vertical='center')
+    bdr = Border(left=Side(style='thin'), right=Side(style='thin'),
+                 top=Side(style='thin'), bottom=Side(style='thin'))
+    hdrs = ['ID', '姓名', '公司', '电话', '行业',
+            '总分', '商业模式', '品牌定位', '流量获客', '转化成交', '组织系统',
+            '类型', '提交时间']
+    for c, h in enumerate(hdrs, 1):
+        cell = ws.cell(row=1, column=c, value=h)
+        cell.font = hfont
+        cell.fill = hfill
+        cell.alignment = halign
+        cell.border = bdr
+    for ri, row in enumerate(rows, 2):
+        for ci, v in enumerate(row, 1):
+            cell = ws.cell(row=ri, column=ci, value=v)
             cell.border = bdr
-        for ri, row in enumerate(rows, 2):
-            for ci, v in enumerate(row, 1):
-                cell = ws.cell(row=ri, column=ci, value=v)
-                cell.border = bdr
-                cell.alignment = Alignment(horizontal='center', vertical='center')
-        for col in ws.columns:
-            ml = 0
-            first_cell = list(col)[0]
-            letter = first_cell.column_letter
-            for cell in col:
-                try:
-                    if cell.value and len(str(cell.value)) > ml:
-                        ml = len(str(cell.value))
-                except Exception:
-                    pass
-            ws.column_dimensions[letter].width = min(ml + 2, 50)
-        buf = BytesIO()
-        wb.save(buf)
-        buf.seek(0)
-        excel_bytes = buf.read()
-        fname = '自检清单数据_' + datetime.now().strftime('%Y%m%d_%H%M%S') + '.xlsx'
-        return {
-            'statusCode': 200,
-            'headers': {
-                'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                'Content-Disposition': 'attachment; filename="' + fname + '"',
-            },
-            'body': base64.b64encode(excel_bytes).decode('utf-8'),
-            'encoding': 'base64',
-        }
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+    for col in ws.columns:
+        ml = 0
+        first_cell = list(col)[0]
+        letter = first_cell.column_letter
+        for cell in col:
+            try:
+                if cell.value and len(str(cell.value)) > ml:
+                    ml = len(str(cell.value))
+            except Exception:
+                pass
+        ws.column_dimensions[letter].width = min(ml + 2, 50)
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    excel_bytes = buf.read()
+    fname = '自检清单数据_' + datetime.now().strftime('%Y%m%d_%H%M%S') + '.xlsx'
 
-    # 404
-    return _html_resp('404 Not Found', 404)
+    return Response(
+        excel_bytes,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition': 'attachment; filename="' + fname + '"'}
+    )
 
+
+# ===== 404 兜底 =====
+@app.errorhandler(404)
+def not_found(e):
+    return _html_response('404 Not Found', 404)
