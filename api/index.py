@@ -269,12 +269,17 @@ def admin_login():
         body = flask_request.form.to_dict() or (flask_request.get_json(silent=True) or {})
         pw = body.get('password', '')
         if pw == ADMIN_PASSWORD:
+            # 直接构造 cookie 字符串，通过 Response header 设置
             cookie_str = _make_cookie({'auth': True})
-            resp = redirect('/admin', code=302)
-            # 从 _make_cookie 输出中提取 cookie 值部分
-            cookie_val = cookie_str.split('=', 1)[1].split(';')[0]
-            resp.set_cookie(SESSION_COOKIE, cookie_val,
-                            path='/', httponly=True, max_age=86400)
+            # 返回一个 HTML 页面，用 JS 跳转到 /admin，避免 Vercel 不支持 redirect 的问题
+            redirect_html = '''<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta http-equiv="refresh" content="0;url=/admin">
+<title>登录成功</title></head>
+<body><p>登录成功，正在跳转...</p>
+<script>window.location.href='/admin';</script>
+</body></html>'''
+            resp = _html_response(redirect_html)
+            resp.headers['Set-Cookie'] = cookie_str
             return resp
         html = LOGIN_HTML.replace('{{ERROR}}', '<div class="err">密码错误，请重试</div>')
         return _html_response(html)
@@ -285,15 +290,26 @@ def admin_login():
 
 @app.route('/admin/logout')
 def admin_logout():
-    resp = redirect('/admin/login', code=302)
-    resp.delete_cookie(SESSION_COOKIE, path='/')
+    resp = _html_response('''<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta http-equiv="refresh" content="0;url=/admin/login">
+<title>已退出</title></head>
+<body><p>已退出登录，正在跳转...</p>
+<script>window.location.href='/admin/login';</script>
+</body></html>''')
+    resp.headers['Set-Cookie'] = SESSION_COOKIE + '=; Path=/; HttpOnly; Max-Age=0'
     return resp
 
 
 @app.route('/admin')
 def admin():
     if not _is_auth():
-        return redirect('/admin/login', code=302)
+        resp = _html_response('''<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta http-equiv="refresh" content="0;url=/admin/login">
+<title>请登录</title></head>
+<body><p>请先登录...</p>
+<script>window.location.href='/admin/login';</script>
+</body></html>''')
+        return resp
     return _html_response(ADMIN_HTML)
 
 
