@@ -434,7 +434,7 @@ body{
 
   <div class="submit-wrap">
     <div class="submit-tip" id="sub-tip">请完成全部 50 道题目后提交</div>
-    <button class="btn-submit" id="btn-sub" onclick="doSubmit()" disabled>
+    <button type="button" class="btn-submit" id="btn-sub" onclick="doSubmit(); return false;" disabled>
       🔍 查看我的诊断结果
     </button>
   </div>
@@ -457,8 +457,8 @@ body{
       <div class="dim-scores-grid" id="r-dim-scores"></div>
       <div class="advice-box" id="r-advice"></div>
       <div class="result-btns">
-        <button class="btn-retry" onclick="doRetry()">🔄 重新自检</button>
-        <button class="btn-share" onclick="doShare()">📤 分享结果</button>
+        <button type="button" class="btn-retry" onclick="doRetry()">🔄 重新自检</button>
+        <button type="button" class="btn-share" onclick="doShare()">📤 分享结果</button>
       </div>
       <div class="save-tip" id="r-save-tip">结果已保存到本地</div>
     </div>
