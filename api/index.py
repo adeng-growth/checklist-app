@@ -75,9 +75,9 @@ tr:hover{background:#f8fafc}
 </div></div>
 <script>
 fetch('/api/records').then(r=>r.json()).then(d=>{
-  let html = '<table><tr><th>姓名</th><th>公司</th><th>总分</th><th>类型</th></tr>';
+  let html = '<table><tr><th>姓名</th><th>公司</th><th>总分</th><th>类型</th><th>提交时间</th></tr>';
   (d.records||[]).forEach(r=>{
-    html += '<tr><td>'+r.name+'</td><td>'+r.company+'</td><td>'+r.score_total+'</td><td>'+r.result_type+'</td></tr>';
+    html += '<tr><td>'+r.name+'</td><td>'+r.company+'</td><td>'+r.score_total+'</td><td>'+r.result_type+'</td><td>'+r.submit_time+'</td></tr>';
   });
   html += '</table>';
   document.getElementById('data').innerHTML = html;
@@ -158,6 +158,7 @@ def records():
                 'company': f.get('Company', ''),
                 'score_total': f.get('ScoreTotal', 0),
                 'result_type': f.get('ResultType', ''),
+                'submit_time': item.get('createdTime', '')[:10],  # 只取日期部分 YYYY-MM-DD
             })
         return Response(json.dumps({'records': recs}), mimetype='application/json')
     except Exception as e:
@@ -186,13 +187,14 @@ def export_csv():
                         f.get('Company', ''),
                         str(f.get('ScoreTotal', 0)),
                         f.get('ResultType', ''),
+                        item.get('createdTime', '')[:10],  # 只取日期部分
                     ])
         except Exception as e:
             print('Export error:', e)
 
     # 生成CSV
     output = []
-    output.append('"姓名","公司","总分","类型"')
+    output.append('"姓名","公司","总分","类型","提交时间"')
     for row in rows:
         formatted = ['"' + str(v).replace('"', '""') + '"' for v in row]
         output.append(','.join(formatted))
